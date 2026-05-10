@@ -1,0 +1,1441 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Grid, Card, CardContent, Typography, Box, Button, Chip,
+  TextField, FormControl, InputLabel, Select, MenuItem,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  IconButton, CircularProgress, Alert, List, ListItem, ListItemText, Avatar, Divider,
+} from '@mui/material';
+import {
+  Add, Delete, Assignment, Upload, Download, Grade, Warning,
+  CheckCircle, AttachFile, OpenInNew, Edit, Close,
+} from '@mui/icons-material';
+import Layout from '../components/Layout';
+import { FACULTY_NAV, STUDENT_NAV, ADMIN_NAV } from '../constants/nav';
+import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import toast from 'react-hot-toast';
+import { format, isPast } from 'date-fns';
+
+const amber = '#f59e0b';
+const STATUS_COLOR = { SUBMITTED: 'primary', GRADED: 'success', LATE: 'warning' };
+
+export default function Assignments({ isDark, onToggleDark }) {
+  const { user } = useAuth();
+  const isFaculty = user?.role === 'FACULTY' || user?.role === 'ADMIN';
+  
+  const [assignments, setAssignments] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showSubmissionsDialog, setShowSubmissionsDialog] = useState(false);
+  const [showGradeDialog, setShowGradeDialog] = useState(false);
+  const [showSubmitDialog, setShowSubmitDialog] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [selectedAssignment, setSelectedAssignment] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
+  const [uploadMode, setUploadMode] = useState('link');
+  const [subMode, setSubMode] = useState('link');
+  const [file, setFile] = useState(null);
+  const [subFile, setSubFile] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+  
+  const [form, setForm] = useState({
+    title: '',
+    description: '',
+    subjectId: '',
+    dueDate: '',
+    maxMarks: 100,
+    fileUrl: '',
+  });
+  
+  const [subForm, setSubForm] = useState({
+    textContent: '',
+    fileUrl: '',
+  });
+  
+  const [gradeForm, setGradeForm] = useState({
+    marks: '',
+    feedback: '',
+  });
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [aRes, sRes] = await Promise.all([
+        api.get('/assignments'),
+        api.get('/common/subjects'),
+      ]);
+      setAssignments(aRes.data);
+      setSubjects(sRes.data);
+    } catch (err) {
+      toast.error('Failed to load assignments');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createAssignment = async () => {
+    if (!form.title) return toast.error('Title is required');
+    if (!form.subjectId) return toast.error('Subject is required');
+    if (!form.dueDate) return toast.error('Due date is required');
+
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append('title', form.title);
+      fd.append('description', form.description || '');
+      fd.append('subjectId', form.subjectId);
+      fd.append('dueDate', form.dueDate);
+      fd.append('maxMarks', form.maxMarks);
+
+      if (uploadMode === 'file' && file) {
+        fd.append('file', file);
+      } else if (form.fileUrl) {
+        fd.append('fileUrl', form.fileUrl);
+      }
+
+      await api.post('/assignments', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      toast.success('Assignment created!');
+      setShowCreateDialog(false);
+      setForm({
+        title: '',
+        description: '',
+        subjectId: '',
+        dueDate: '',
+        maxMarks: 100,
+        fileUrl: '',
+      });
+      setFile(null);
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to create');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const viewSubmissions = async (assignment) => {
+    setSelectedAssignment(assignment);
+    try {
+      const { data } = await api.get(`/assignments/${assignment.id}/submissions`);
+      setSubmissions(data);
+      setShowSubmissionsDialog(true);
+    } catch {
+      toast.error('Failed to load submissions');
+    }
+  };
+
+  const gradeSubmission = async () => {
+    if (!gradeForm.marks) return toast.error('Enter marks');
+    try {
+      await api.post(`/assignments/grade/${selectedSubmission.id}`, gradeForm);
+      toast.success('Graded!');
+      setShowGradeDialog(false);
+      viewSubmissions(selectedAssignment);
+    } catch {
+      toast.error('Grading failed');
+    }
+  };
+
+  const submitAssignment = async () => {
+    if (subMode === 'text' && !subForm.textContent)
+      return toast.error('Enter your answer');
+    if (subMode === 'link' && !subForm.fileUrl)
+      return toast.error('Paste a file link');
+    if (subMode === 'file' && !subFile)
+      return toast.error('Select a file to upload');
+
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      if (subForm.textContent) fd.append('textContent', subForm.textContent);
+      if (subMode === 'file' && subFile) {
+        fd.append('file', subFile);
+      } else if (subMode === 'link' && subForm.fileUrl) {
+        fd.append('fileUrl', subForm.fileUrl);
+      }
+
+      await api.post(`/assignments/${selectedAssignment.id}/submit`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      toast.success('Submitted successfully!');
+      setShowSubmitDialog(false);
+      setSubForm({ textContent: '', fileUrl: '' });
+      setSubFile(null);
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Submission failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const deleteAssignment = async (id) => {
+    try {
+      await api.delete(`/assignments/${id}`);
+      toast.success('Deleted successfully');
+      setShowDeleteConfirm(null);
+      loadData();
+    } catch {
+      toast.error('Delete failed');
+    }
+  };
+
+  const openSubmitDialog = (a) => {
+    setSelectedAssignment(a);
+    const mySub = a.submissions?.[0];
+    if (mySub) {
+      setSubForm({
+        textContent: mySub.textContent || '',
+        fileUrl: mySub.fileUrl || '',
+      });
+      setSubMode(mySub.fileUrl ? 'link' : 'text');
+    } else {
+      setSubForm({ textContent: '', fileUrl: '' });
+      setSubMode('link');
+    }
+    setShowSubmitDialog(true);
+  };
+
+  const getFileIcon = (url) => {
+    if (!url) return '📎';
+    const ext = url.split('.').pop()?.split('?')[0]?.toLowerCase();
+    if (ext === 'pdf') return '📄';
+    if (['doc', 'docx'].includes(ext)) return '📘';
+    if (['ppt', 'pptx'].includes(ext)) return '📙';
+    if (['xls', 'xlsx'].includes(ext)) return '📊';
+    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return '🖼️';
+    return '📎';
+  };
+
+  if (loading) {
+    return (
+      <Layout
+        isDark={isDark}
+        onToggleDark={onToggleDark}
+        title="Assignments"
+        navItems={
+          user?.role === 'ADMIN'
+            ? ADMIN_NAV
+            : isFaculty
+            ? FACULTY_NAV
+            : STUDENT_NAV
+        }
+      >
+        <div className="flex justify-center items-center min-h-screen">
+          <div className={`w-12 h-12 border-4 border-amber-400 border-t-amber-600 rounded-full animate-spin`}></div>
+        </div>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout
+      isDark={isDark}
+      onToggleDark={onToggleDark}
+      title="Assignments"
+      navItems={
+        user?.role === 'ADMIN'
+          ? ADMIN_NAV
+          : isFaculty
+          ? FACULTY_NAV
+          : STUDENT_NAV
+      }
+    >
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex justify-between items-center flex-wrap gap-4">
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+            {isFaculty ? `${assignments.length} Assignments` : 'My Assignments'}
+          </h1>
+          {isFaculty && (
+            <button
+              onClick={() => {
+                setShowCreateDialog(true);
+                setForm({
+                  title: '',
+                  description: '',
+                  subjectId: '',
+                  dueDate: '',
+                  maxMarks: 100,
+                  fileUrl: '',
+                });
+                setFile(null);
+              }}
+              className="px-6 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg transition"
+            >
+              + Create Assignment
+            </button>
+          )}
+        </div>
+
+        {/* Assignments Grid */}
+        {assignments.length === 0 ? (
+          <div className={`text-center py-16 rounded-lg ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+            <div className="text-6xl mb-4 opacity-30">📋</div>
+            <p className={`${isDark ? 'text-gray-400' : 'text-gray-500'} text-lg`}>
+              {isFaculty ? 'No assignments yet.' : 'No assignments yet.'}
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {assignments.map((a) => {
+              const mySub = a.submissions?.[0];
+              const isOverdue = isPast(new Date(a.dueDate));
+
+              return (
+                <div
+                  key={a.id}
+                  className={`rounded-lg shadow-md border transition-all ${
+                    isDark
+                      ? 'bg-gray-800 border-gray-700 hover:shadow-lg'
+                      : 'bg-white border-gray-200 hover:shadow-lg'
+                  }`}
+                >
+                  <div className="p-6 space-y-4">
+                    {/* Header with chips */}
+                    <div className="flex justify-between items-start gap-2 flex-wrap">
+                      <span className="px-3 py-1 bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200 rounded-full text-xs font-semibold">
+                        {a.subject?.name}
+                      </span>
+                      <div className="flex gap-2 flex-wrap justify-end">
+                        {isOverdue && !mySub && (
+                          <span className="px-2 py-1 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded text-xs font-semibold">
+                            ⚠️ Overdue
+                          </span>
+                        )}
+                        {mySub && (
+                          <span
+                            className={`px-2 py-1 rounded text-xs font-semibold ${
+                              mySub.status === 'SUBMITTED'
+                                ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200'
+                                : 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200'
+                            }`}
+                          >
+                            {mySub.status === 'GRADED'
+                              ? `✅ ${mySub.marks}/${a.maxMarks}`
+                              : mySub.status}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Title & Description */}
+                    <div>
+                      <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                        {a.title}
+                      </h3>
+                      <p className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                        {a.description}
+                      </p>
+                    </div>
+
+                    {/* Date & Marks */}
+                    <div className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
+                      📅 Due: {format(new Date(a.dueDate), 'dd MMM yyyy, hh:mm a')} · Max:{' '}
+                      {a.maxMarks} marks
+                    </div>
+
+                    {/* Assignment Attachment */}
+                    {a.fileUrl && (
+                      <button
+                        onClick={() =>
+                          window.open(a.fileUrl, '_blank')
+                        }
+                        className="w-full px-4 py-2 text-left text-sm font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 rounded hover:bg-amber-100 dark:hover:bg-amber-900/50 transition border border-amber-200 dark:border-amber-700/50"
+                      >
+                        {getFileIcon(a.fileUrl)} View Assignment
+                      </button>
+                    )}
+
+                    {/* Student's Submitted File */}
+                    {mySub?.fileUrl && (
+                      <button
+                        onClick={() => {
+                          const link = document.createElement('a');
+                          link.href = mySub.fileUrl;
+                          link.download =
+                            mySub.fileUrl.split('/').pop()?.split('?')[0] ||
+                            'file';
+                          link.click();
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm font-semibold text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/30 rounded hover:bg-green-100 dark:hover:bg-green-900/50 transition border border-green-200 dark:border-green-700/50"
+                      >
+                        {getFileIcon(mySub.fileUrl)} Download Your Submission
+                      </button>
+                    )}
+
+                    {/* Feedback */}
+                    {mySub?.feedback && (
+                      <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700/50 rounded text-sm text-green-700 dark:text-green-300">
+                        <strong>Feedback:</strong> {mySub.feedback}
+                      </div>
+                    )}
+
+                    {/* Action Buttons */}
+                    <div className="flex gap-2 flex-wrap pt-2">
+                      {isFaculty ? (
+                        <>
+                          <button
+                            onClick={() => viewSubmissions(a)}
+                            className="flex-1 px-4 py-2 text-sm font-semibold text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-700 rounded hover:bg-amber-50 dark:hover:bg-amber-900/20 transition"
+                          >
+                            👥 Submissions ({a._count?.submissions || 0})
+                          </button>
+                          <button
+                            onClick={() => setShowDeleteConfirm(a.id)}
+                            className="px-4 py-2 text-sm font-semibold text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                          >
+                            🗑️
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => openSubmitDialog(a)}
+                          disabled={mySub?.status === 'GRADED'}
+                          className={`flex-1 px-4 py-2 text-sm font-semibold rounded transition ${
+                            mySub?.status === 'GRADED'
+                              ? 'opacity-50 cursor-not-allowed bg-gray-200 dark:bg-gray-700 text-gray-500'
+                              : mySub
+                              ? 'border border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                              : 'bg-amber-500 hover:bg-amber-600 text-white'
+                          }`}
+                        >
+                          {mySub?.status === 'GRADED'
+                            ? '✅ Graded'
+                            : mySub
+                            ? '✏️ Edit'
+                            : '📤 Submit'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className={`rounded-lg shadow-2xl max-w-sm w-full ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="p-6 space-y-4">
+              <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                Delete Assignment?
+              </h3>
+              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                This action cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeleteConfirm(null)}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    isDark
+                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-900'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => deleteAssignment(showDeleteConfirm)}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-semibold transition"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Assignment Dialog */}
+      {showCreateDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className={`rounded-lg shadow-2xl w-full max-w-md my-8 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="p-6 space-y-6">
+              <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                Create Assignment
+              </h2>
+
+              {/* Title */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Title *
+                </label>
+                <input
+                  type="text"
+                  value={form.title}
+                  onChange={(e) =>
+                    setForm({ ...form, title: e.target.value })
+                  }
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                  placeholder="Assignment title"
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Description
+                </label>
+                <textarea
+                  value={form.description}
+                  onChange={(e) =>
+                    setForm({ ...form, description: e.target.value })
+                  }
+                  rows="3"
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                  placeholder="Assignment description"
+                />
+              </div>
+
+              {/* Subject */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Subject *
+                </label>
+                <select
+                  value={form.subjectId}
+                  onChange={(e) =>
+                    setForm({ ...form, subjectId: e.target.value })
+                  }
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                >
+                  <option value="">Select Subject</option>
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Due Date */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Due Date *
+                </label>
+                <input
+                  type="datetime-local"
+                  value={form.dueDate}
+                  onChange={(e) =>
+                    setForm({ ...form, dueDate: e.target.value })
+                  }
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              </div>
+
+              {/* Max Marks */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Max Marks
+                </label>
+                <input
+                  type="number"
+                  value={form.maxMarks}
+                  onChange={(e) =>
+                    setForm({ ...form, maxMarks: e.target.value })
+                  }
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              </div>
+
+              {/* Upload Mode Toggle */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setUploadMode('link')}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    uploadMode === 'link'
+                      ? 'bg-amber-500 text-white'
+                      : isDark
+                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  🔗 Paste Link
+                </button>
+                <button
+                  onClick={() => setUploadMode('file')}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    uploadMode === 'file'
+                      ? 'bg-amber-500 text-white'
+                      : isDark
+                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  📁 Upload File
+                </button>
+              </div>
+
+              {/* File/Link Input */}
+              {uploadMode === 'link' ? (
+                <div>
+                  <input
+                    type="text"
+                    value={form.fileUrl}
+                    onChange={(e) =>
+                      setForm({ ...form, fileUrl: e.target.value })
+                    }
+                    placeholder="https://drive.google.com/..."
+                    className={`w-full px-4 py-2 rounded border ${
+                      isDark
+                        ? 'bg-gray-700 border-gray-600 text-white'
+                        : 'bg-white border-gray-300 text-gray-900'
+                    }`}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <input
+                    type="file"
+                    id="assign-file"
+                    style={{ display: 'none' }}
+                    onChange={(e) => setFile(e.target.files[0])}
+                    accept=".pdf,.doc,.docx,.ppt,.pptx,.zip"
+                  />
+                  <label htmlFor="assign-file" className="block">
+                    <button
+                      type="button"
+                      className={`w-full px-4 py-3 rounded border-2 border-dashed font-semibold transition ${
+                        isDark
+                          ? 'border-gray-600 text-gray-400 hover:border-amber-500 hover:text-amber-400'
+                          : 'border-gray-300 text-gray-500 hover:border-amber-500 hover:text-amber-600'
+                      }`}
+                    >
+                      {file ? `✅ ${file.name}` : '📁 Click to select file'}
+                    </button>
+                  </label>
+                </div>
+              )}
+
+              {/* Dialog Actions */}
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={() => {
+                    setShowCreateDialog(false);
+                    setFile(null);
+                  }}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    isDark
+                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-900'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={createAssignment}
+                  disabled={submitting}
+                  className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-semibold rounded transition"
+                >
+                  {submitting ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Submissions Dialog (Faculty) */}
+      {showSubmissionsDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className={`rounded-lg shadow-2xl w-full max-w-2xl my-8 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                  Submissions — {selectedAssignment?.title}
+                </h2>
+                <button
+                  onClick={() => setShowSubmissionsDialog(false)}
+                  className={`text-2xl font-bold ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-900'}`}
+                >
+                  ×
+                </button>
+              </div>
+
+              {submissions.length === 0 ? (
+                <div className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  No submissions yet
+                </div>
+              ) : (
+                <div className="space-y-4 max-h-96 overflow-y-auto">
+                  {submissions.map((sub) => (
+                    <div
+                      key={sub.id}
+                      className={`p-4 rounded border ${
+                        isDark
+                          ? 'bg-gray-700 border-gray-600'
+                          : 'bg-gray-50 border-gray-200'
+                      }`}
+                    >
+                      {/* Student Info */}
+                      <div className="flex justify-between items-start gap-4 mb-3">
+                        <div>
+                          <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                            {sub.student?.name}
+                          </p>
+                          <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {sub.student?.rollNumber}
+                          </p>
+                        </div>
+                        <span
+                          className={`px-3 py-1 rounded text-sm font-semibold ${
+                            sub.status === 'GRADED'
+                              ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200'
+                              : 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200'
+                          }`}
+                        >
+                          {sub.status === 'GRADED'
+                            ? `✅ ${sub.marks}/${selectedAssignment?.maxMarks}`
+                            : sub.status}
+                        </span>
+                      </div>
+
+                      {/* Submission Content */}
+                      {sub.textContent && (
+                        <p className={`text-sm mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {sub.textContent}
+                        </p>
+                      )}
+
+                      {/* Submitted File */}
+                      {sub.fileUrl && (
+                        <button
+                          onClick={() =>
+                            window.open(sub.fileUrl, '_blank')
+                          }
+                          className="block text-sm font-semibold text-amber-600 dark:text-amber-400 hover:underline mb-2"
+                        >
+                          {getFileIcon(sub.fileUrl)} View Submitted File
+                        </button>
+                      )}
+
+                      {/* Feedback */}
+                      {sub.feedback && (
+                        <p className={`text-sm italic mb-2 ${isDark ? 'text-green-400' : 'text-green-700'}`}>
+                          <strong>Feedback:</strong> {sub.feedback}
+                        </p>
+                      )}
+
+                      {/* Meta Info */}
+                      <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'} mb-3`}>
+                        Submitted: {format(new Date(sub.submittedAt), 'dd MMM yyyy, hh:mm a')}
+                      </p>
+
+                      {/* Grade Button */}
+                      {sub.status !== 'GRADED' && (
+                        <button
+                          onClick={() => {
+                            setSelectedSubmission(sub);
+                            setGradeForm({ marks: '', feedback: '' });
+                            setShowGradeDialog(true);
+                          }}
+                          className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded text-sm transition"
+                        >
+                          Grade Submission
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Close Button */}
+              <button
+                onClick={() => setShowSubmissionsDialog(false)}
+                className={`w-full px-4 py-2 rounded font-semibold transition ${
+                  isDark
+                    ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                    : 'bg-gray-200 hover:bg-gray-300 text-gray-900'
+                }`}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Grade Dialog */}
+      {showGradeDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className={`rounded-lg shadow-2xl w-full max-w-md ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="p-6 space-y-6">
+              <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                Grade Submission
+              </h2>
+
+              {/* Marks */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Marks (out of {selectedAssignment?.maxMarks}) *
+                </label>
+                <input
+                  type="number"
+                  value={gradeForm.marks}
+                  onChange={(e) =>
+                    setGradeForm({ ...gradeForm, marks: e.target.value })
+                  }
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              </div>
+
+              {/* Feedback */}
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                  Feedback
+                </label>
+                <textarea
+                  value={gradeForm.feedback}
+                  onChange={(e) =>
+                    setGradeForm({ ...gradeForm, feedback: e.target.value })
+                  }
+                  rows="2"
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                  placeholder="Optional feedback for student"
+                />
+              </div>
+
+              {/* Dialog Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowGradeDialog(false)}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    isDark
+                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-900'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={gradeSubmission}
+                  className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded transition"
+                >
+                  Submit Grade
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Submit/Edit Assignment Dialog */}
+      {showSubmitDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className={`rounded-lg shadow-2xl w-full max-w-md my-8 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+            <div className="p-6 space-y-6">
+              <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                {selectedAssignment?.submissions?.[0] ? '✏️ Edit Submission' : '📤 Submit'} —{' '}
+                {selectedAssignment?.title}
+              </h2>
+
+              {selectedAssignment?.submissions?.[0] && (
+                <div className={`p-3 rounded ${isDark ? 'bg-blue-900/30' : 'bg-blue-50'} ${isDark ? 'text-blue-200' : 'text-blue-700'} text-sm`}>
+                  You have already submitted. You can update below.
+                </div>
+              )}
+
+              {/* Submission Mode Toggle */}
+              <div className="flex gap-2 flex-wrap">
+                {['link', 'file', 'text'].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setSubMode(m)}
+                    className={`px-4 py-2 rounded font-semibold transition ${
+                      subMode === m
+                        ? 'bg-amber-500 text-white'
+                        : isDark
+                        ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    {m === 'link' ? '🔗 Paste Link' : m === 'file' ? '📁 Upload' : '✍️ Text'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Text Answer */}
+              {subMode === 'text' && (
+                <textarea
+                  value={subForm.textContent}
+                  onChange={(e) =>
+                    setSubForm({ ...subForm, textContent: e.target.value })
+                  }
+                  rows="6"
+                  placeholder="Type your answer here..."
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              )}
+
+              {/* File Link */}
+              {subMode === 'link' && (
+                <input
+                  type="text"
+                  value={subForm.fileUrl}
+                  onChange={(e) =>
+                    setSubForm({ ...subForm, fileUrl: e.target.value })
+                  }
+                  placeholder="https://drive.google.com/..."
+                  className={`w-full px-4 py-2 rounded border ${
+                    isDark
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              )}
+
+              {/* File Upload */}
+              {subMode === 'file' && (
+                <div>
+                  <input
+                    type="file"
+                    id="sub-file"
+                    style={{ display: 'none' }}
+                    onChange={(e) => setSubFile(e.target.files[0])}
+                    accept=".pdf,.doc,.docx,.ppt,.pptx,.zip,.jpg,.png"
+                  />
+                  <label htmlFor="sub-file" className="block">
+                    <button
+                      type="button"
+                      className={`w-full px-4 py-3 rounded border-2 border-dashed font-semibold transition ${
+                        isDark
+                          ? 'border-gray-600 text-gray-400 hover:border-amber-500 hover:text-amber-400'
+                          : 'border-gray-300 text-gray-500 hover:border-amber-500 hover:text-amber-600'
+                      }`}
+                    >
+                      {subFile ? `✅ ${subFile.name}` : '📁 Click to select file'}
+                    </button>
+                  </label>
+                </div>
+              )}
+
+              {/* Dialog Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowSubmitDialog(false);
+                    setSubFile(null);
+                  }}
+                  className={`flex-1 px-4 py-2 rounded font-semibold transition ${
+                    isDark
+                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-900'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submitAssignment}
+                  disabled={submitting}
+                  className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-semibold rounded transition"
+                >
+                  {submitting
+                    ? 'Submitting...'
+                    : selectedAssignment?.submissions?.[0]
+                    ? 'Update'
+                    : 'Submit'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Layout>
+  );
+}
+
+const amber = '#f59e0b';
+const STATUS_COLOR = { SUBMITTED: 'primary', GRADED: 'success', LATE: 'warning' };
+
+export default function Assignments({ isDark, onToggleDark }) {
+  const { user } = useAuth();
+  const isFaculty = user?.role === 'FACULTY' || user?.role === 'ADMIN';
+  const [assignments, setAssignments]   = useState([]);
+  const [subjects,    setSubjects]      = useState([]);
+  const [loading,     setLoading]       = useState(true);
+  const [open,        setOpen]          = useState(false);
+  const [submitting,  setSubmitting]    = useState(false);
+  const [selectedAss, setSelectedAss]  = useState(null);
+  const [submissions, setSubmissions]   = useState([]);
+  const [subDialog,   setSubDialog]     = useState(false);
+  const [gradeDialog, setGradeDialog]   = useState(null);
+  const [submitDialog, setSubmitDialog] = useState(null);
+  const [uploadMode,  setUploadMode]    = useState('link');  // faculty attachment
+  const [subMode,     setSubMode]       = useState('link');  // student submission
+  const [file,        setFile]          = useState(null);
+  const [subFile,     setSubFile]       = useState(null);
+  const [form, setForm] = useState({ title: '', description: '', subjectId: '', dueDate: '', maxMarks: 100, fileUrl: '' });
+  const [subForm, setSubForm]   = useState({ textContent: '', fileUrl: '' });
+  const [gradeForm, setGradeForm] = useState({ marks: '', feedback: '' });
+
+  useEffect(() => { loadData(); }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [aRes, sRes] = await Promise.all([api.get('/assignments'), api.get('/common/subjects')]);
+      setAssignments(aRes.data);
+      setSubjects(sRes.data);
+    } catch { toast.error('Failed to load assignments'); }
+    finally { setLoading(false); }
+  };
+
+  const createAssignment = async () => {
+    if (!form.title)      return toast.error('Title is required');
+    if (!form.subjectId)  return toast.error('Subject is required');
+    if (!form.dueDate)    return toast.error('Due date is required');
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append('title',       form.title);
+      fd.append('description', form.description || '');
+      fd.append('subjectId',   form.subjectId);
+      fd.append('dueDate',     form.dueDate);
+      fd.append('maxMarks',    form.maxMarks);
+      if (uploadMode === 'file' && file) {
+        fd.append('file', file);
+      } else if (form.fileUrl) {
+        fd.append('fileUrl', form.fileUrl);
+      }
+      await api.post('/assignments', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      toast.success('Assignment created!');
+      setOpen(false);
+      setForm({ title: '', description: '', subjectId: '', dueDate: '', maxMarks: 100, fileUrl: '' });
+      setFile(null);
+      loadData();
+    } catch (err) { toast.error(err.response?.data?.error || 'Failed to create'); }
+    finally { setSubmitting(false); }
+  };
+
+  const viewSubmissions = async (assignment) => {
+    setSelectedAss(assignment);
+    try {
+      const { data } = await api.get(`/assignments/${assignment.id}/submissions`);
+      setSubmissions(data);
+      setSubDialog(true);
+    } catch { toast.error('Failed to load submissions'); }
+  };
+
+  const gradeSubmission = async () => {
+    if (!gradeForm.marks) return toast.error('Enter marks');
+    try {
+      await api.post(`/assignments/grade/${gradeDialog.id}`, gradeForm);
+      toast.success('Graded!');
+      setGradeDialog(null);
+      viewSubmissions(selectedAss);
+    } catch { toast.error('Grading failed'); }
+  };
+
+  const submitAssignment = async () => {
+    if (subMode === 'text' && !subForm.textContent) return toast.error('Enter your answer');
+    if (subMode === 'link' && !subForm.fileUrl) return toast.error('Paste a file link');
+    if (subMode === 'file' && !subFile) return toast.error('Select a file to upload');
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      if (subForm.textContent) fd.append('textContent', subForm.textContent);
+      if (subMode === 'file' && subFile) {
+        fd.append('file', subFile);
+      } else if (subMode === 'link' && subForm.fileUrl) {
+        fd.append('fileUrl', subForm.fileUrl);
+      }
+      await api.post(`/assignments/${submitDialog.id}/submit`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      toast.success('Submitted successfully!');
+      setSubmitDialog(null);
+      setSubForm({ textContent: '', fileUrl: '' });
+      setSubFile(null);
+      loadData();
+    } catch (err) { toast.error(err.response?.data?.error || 'Submission failed'); }
+    finally { setSubmitting(false); }
+  };
+
+  const openSubmitDialog = (a) => {
+    const mySub = a.submissions?.[0];
+    if (mySub) {
+      // Pre-fill with existing submission for editing
+      setSubForm({ textContent: mySub.textContent || '', fileUrl: mySub.fileUrl || '' });
+      setSubMode(mySub.fileUrl ? 'link' : 'text');
+    } else {
+      setSubForm({ textContent: '', fileUrl: '' });
+      setSubMode('link');
+    }
+    setSubmitDialog(a);
+  };
+
+  const deleteAssignment = async (id) => {
+    if (!window.confirm('Delete this assignment?')) return;
+    try { await api.delete(`/assignments/${id}`); toast.success('Deleted'); loadData(); }
+    catch { toast.error('Delete failed'); }
+  };
+
+  // File type icon
+  const fileIcon = (url) => {
+    if (!url) return null;
+    const ext = url.split('.').pop()?.split('?')[0]?.toLowerCase();
+    if (ext === 'pdf')              return '📕';
+    if (['doc','docx'].includes(ext)) return '📘';
+    if (['ppt','pptx'].includes(ext)) return '📙';
+    return '📎';
+  };
+
+  if (loading) return (
+    <Layout isDark={isDark} onToggleDark={onToggleDark} title="Assignments"
+      navItems={user?.role === 'ADMIN' ? ADMIN_NAV : isFaculty ? FACULTY_NAV : STUDENT_NAV}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}><CircularProgress sx={{ color: amber }} /></Box>
+    </Layout>
+  );
+
+  return (
+    <Layout isDark={isDark} onToggleDark={onToggleDark} title="Assignments"
+      navItems={user?.role === 'ADMIN' ? ADMIN_NAV : isFaculty ? FACULTY_NAV : STUDENT_NAV}>
+
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3, flexWrap: 'wrap', gap: 2 }}>
+        <Typography variant="h5" fontWeight={700}>
+          {isFaculty ? `${assignments.length} Assignments` : 'My Assignments'}
+        </Typography>
+        {isFaculty && (
+          <Button variant="contained" startIcon={<Add />} onClick={() => setOpen(true)}
+            sx={{ bgcolor: amber, color: '#0f1923', '&:hover': { bgcolor: '#d97706' } }}>
+            Create Assignment
+          </Button>
+        )}
+      </Box>
+
+      <Grid container spacing={2}>
+        {assignments.map(a => {
+          const mySub    = a.submissions?.[0];
+          const isOverdue = isPast(new Date(a.dueDate));
+          return (
+            <Grid item xs={12} md={6} key={a.id}>
+              <Card>
+                <CardContent>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 1 }}>
+                    <Chip label={a.subject?.name} size="small" variant="outlined"
+                      sx={{ borderColor: amber, color: amber }} />
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      {isOverdue && !mySub && <Chip label="Overdue" size="small" color="error" icon={<Warning />} />}
+                      {mySub && <Chip label={mySub.status} size="small" color={STATUS_COLOR[mySub.status] || 'default'} />}
+                      {mySub?.marks != null && (
+                        <Chip label={`${mySub.marks}/${a.maxMarks}`} size="small" color="success" />
+                      )}
+                    </Box>
+                  </Box>
+                  <Typography variant="h6" fontWeight={700} gutterBottom>{a.title}</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>{a.description}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    📅 Due: {format(new Date(a.dueDate), 'dd MMM yyyy, hh:mm a')} · Max: {a.maxMarks} marks
+                  </Typography>
+
+                  {/* Assignment attachment */}
+                  {a.fileUrl && (
+                    <Box sx={{ mt: 1 }}>
+                      <Button size="small" startIcon={<OpenInNew />} href={a.fileUrl} target="_blank"
+                        variant="outlined" sx={{ borderColor: amber, color: amber }}>
+                        {fileIcon(a.fileUrl)} View Attachment
+                      </Button>
+                    </Box>
+                  )}
+
+                  {/* Student's submitted file */}
+                  {mySub?.fileUrl && (
+                    <Box sx={{ mt: 1 }}>
+                      <Button size="small" startIcon={<Download />} href={mySub.fileUrl} target="_blank"
+                        variant="text" color="success">
+                        {fileIcon(mySub.fileUrl)} Your Submitted File
+                      </Button>
+                    </Box>
+                  )}
+
+                  {mySub?.feedback && (
+                    <Alert severity="success" sx={{ mt: 1, py: 0 }}>
+                      Feedback: {mySub.feedback}
+                    </Alert>
+                  )}
+
+                  <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    {isFaculty ? (
+                      <>
+                        <Button size="small" variant="outlined" startIcon={<Grade />}
+                          onClick={() => viewSubmissions(a)}
+                          sx={{ borderColor: amber, color: amber }}>
+                          Submissions ({a._count?.submissions || 0})
+                        </Button>
+                        <IconButton size="small" color="error" onClick={() => deleteAssignment(a.id)}>
+                          <Delete fontSize="small" />
+                        </IconButton>
+                      </>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant={mySub ? 'outlined' : 'contained'}
+                        startIcon={mySub ? <Edit /> : <Upload />}
+                        onClick={() => openSubmitDialog(a)}
+                        disabled={mySub?.status === 'GRADED'}
+                        sx={!mySub ? { bgcolor: amber, color: '#0f1923', '&:hover': { bgcolor: '#d97706' } } : { borderColor: amber, color: amber }}
+                      >
+                        {mySub?.status === 'GRADED' ? '✅ Graded' : mySub ? 'Edit Submission' : 'Submit'}
+                      </Button>
+                    )}
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          );
+        })}
+        {assignments.length === 0 && (
+          <Grid item xs={12}>
+            <Box sx={{ textAlign: 'center', py: 8 }}>
+              <Assignment sx={{ fontSize: 64, opacity: 0.3, mb: 2 }} />
+              <Typography color="text.secondary">
+                {isFaculty ? 'No assignments yet.' : 'No assignments yet.'}
+              </Typography>
+            </Box>
+          </Grid>
+        )}
+      </Grid>
+
+      {/* ── Create Assignment Dialog ── */}
+      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle fontWeight={800}>Create Assignment</DialogTitle>
+        <DialogContent>
+          <TextField fullWidth label="Title *" value={form.title}
+            onChange={e => setForm({ ...form, title: e.target.value })} margin="normal" />
+          <TextField fullWidth label="Description" value={form.description}
+            onChange={e => setForm({ ...form, description: e.target.value })} margin="normal" multiline rows={3} />
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Subject *</InputLabel>
+            <Select value={form.subjectId} label="Subject *" onChange={e => setForm({ ...form, subjectId: e.target.value })}>
+              {subjects.map(s => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <TextField fullWidth label="Due Date *" type="datetime-local" value={form.dueDate}
+            onChange={e => setForm({ ...form, dueDate: e.target.value })} margin="normal"
+            InputLabelProps={{ shrink: true }} />
+          <TextField fullWidth label="Max Marks" type="number" value={form.maxMarks}
+            onChange={e => setForm({ ...form, maxMarks: e.target.value })} margin="normal" />
+
+          {/* Attachment */}
+          <Box sx={{ mt: 2, display: 'flex', gap: 1, mb: 1 }}>
+            <Button size="small" variant={uploadMode === 'link' ? 'contained' : 'outlined'}
+              startIcon={<Link />} onClick={() => setUploadMode('link')}
+              sx={uploadMode === 'link' ? { bgcolor: amber, color: '#0f1923' } : { borderColor: amber, color: amber }}>
+              Paste Link
+            </Button>
+            <Button size="small" variant={uploadMode === 'file' ? 'contained' : 'outlined'}
+              startIcon={<Upload />} onClick={() => setUploadMode('file')}
+              sx={uploadMode === 'file' ? { bgcolor: amber, color: '#0f1923' } : { borderColor: amber, color: amber }}>
+              Upload File
+            </Button>
+          </Box>
+          {uploadMode === 'link' ? (
+            <TextField fullWidth label="Attachment URL (optional)" placeholder="Google Drive, OneDrive..."
+              value={form.fileUrl} onChange={e => setForm({ ...form, fileUrl: e.target.value })} />
+          ) : (
+            <Box>
+              <input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.zip" id="assign-file"
+                style={{ display: 'none' }} onChange={e => setFile(e.target.files[0])} />
+              <label htmlFor="assign-file">
+                <Button variant="outlined" component="span" startIcon={<AttachFile />} fullWidth
+                  sx={{ py: 1.5, borderColor: amber, color: amber, borderStyle: 'dashed' }}>
+                  {file ? `✅ ${file.name}` : 'Choose File (PDF / DOC / PPT / ZIP)'}
+                </Button>
+              </label>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => { setOpen(false); setFile(null); }}>Cancel</Button>
+          <Button variant="contained" onClick={createAssignment} disabled={submitting}
+            sx={{ bgcolor: amber, color: '#0f1923', '&:hover': { bgcolor: '#d97706' } }}>
+            {submitting ? <CircularProgress size={20} sx={{ color: '#0f1923' }} /> : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Submissions Dialog (Faculty) ── */}
+      <Dialog open={subDialog} onClose={() => setSubDialog(false)} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle fontWeight={800}>Submissions — {selectedAss?.title}</DialogTitle>
+        <DialogContent>
+          {submissions.length === 0 ? (
+            <Typography color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>No submissions yet</Typography>
+          ) : (
+            <List>
+              {submissions.map((sub, i) => (
+                <React.Fragment key={sub.id}>
+                  <ListItem alignItems="flex-start"
+                    secondaryAction={
+                      sub.status !== 'GRADED' ? (
+                        <Button size="small" variant="contained"
+                          onClick={() => { setGradeDialog(sub); setGradeForm({ marks: '', feedback: '' }); }}
+                          sx={{ bgcolor: amber, color: '#0f1923' }}>
+                          Grade
+                        </Button>
+                      ) : (
+                        <Chip label={`${sub.marks}/${selectedAss?.maxMarks}`} color="success" size="small" />
+                      )
+                    }
+                    sx={{ pr: 14 }}>
+                    <Avatar sx={{ mr: 2, mt: 0.5, bgcolor: amber, color: '#0f1923', width: 36, height: 36, fontSize: 13, flexShrink: 0 }}>
+                      {(sub.student?.name || '?')[0]}
+                    </Avatar>
+                    <ListItemText
+                      primary={
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <Typography fontWeight={700}>{sub.student?.name}</Typography>
+                          <Chip label={sub.student?.rollNumber} size="small" />
+                          <Chip label={sub.status} size="small" color={STATUS_COLOR[sub.status] || 'default'} />
+                        </Box>
+                      }
+                      secondary={
+                        <Box sx={{ mt: 0.5 }}>
+                          {sub.textContent && (
+                            <Typography variant="body2" sx={{ mb: 0.5, whiteSpace: 'pre-wrap' }}>{sub.textContent}</Typography>
+                          )}
+                          {sub.fileUrl && (
+                            <Button size="small" href={sub.fileUrl} target="_blank"
+                              startIcon={<OpenInNew />} variant="outlined"
+                              sx={{ mb: 0.5, borderColor: amber, color: amber }}>
+                              {fileIcon(sub.fileUrl)} Open Submitted File
+                            </Button>
+                          )}
+                          {sub.feedback && (
+                            <Typography variant="caption" color="success.main" display="block">
+                              Feedback: {sub.feedback}
+                            </Typography>
+                          )}
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            Submitted: {format(new Date(sub.submittedAt), 'dd MMM yyyy, hh:mm a')}
+                          </Typography>
+                        </Box>
+                      }
+                    />
+                  </ListItem>
+                  {i < submissions.length - 1 && <Divider />}
+                </React.Fragment>
+              ))}
+            </List>
+          )}
+        </DialogContent>
+        <DialogActions><Button onClick={() => setSubDialog(false)} sx={{ color: amber }}>Close</Button></DialogActions>
+      </Dialog>
+
+      {/* ── Grade Dialog ── */}
+      <Dialog open={Boolean(gradeDialog)} onClose={() => setGradeDialog(null)} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle fontWeight={800}>Grade Submission</DialogTitle>
+        <DialogContent>
+          <TextField fullWidth label={`Marks (out of ${selectedAss?.maxMarks})`} type="number"
+            value={gradeForm.marks} onChange={e => setGradeForm({ ...gradeForm, marks: e.target.value })} margin="normal" />
+          <TextField fullWidth label="Feedback (optional)" value={gradeForm.feedback}
+            onChange={e => setGradeForm({ ...gradeForm, feedback: e.target.value })} margin="normal" multiline rows={2} />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setGradeDialog(null)}>Cancel</Button>
+          <Button variant="contained" onClick={gradeSubmission}
+            sx={{ bgcolor: amber, color: '#0f1923' }}>Submit Grade</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Student Submit / Edit Dialog ── */}
+      <Dialog open={Boolean(submitDialog)} onClose={() => setSubmitDialog(null)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle fontWeight={800}>
+          {submitDialog?.submissions?.[0] ? '✏️ Edit Submission' : '📤 Submit'} — {submitDialog?.title}
+        </DialogTitle>
+        <DialogContent>
+          {submitDialog?.submissions?.[0] && (
+            <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
+              You have already submitted. You can update your submission below.
+            </Alert>
+          )}
+
+          {/* Mode selector */}
+          <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
+            {['link', 'file', 'text'].map(m => (
+              <Button key={m} size="small" variant={subMode === m ? 'contained' : 'outlined'}
+                onClick={() => setSubMode(m)}
+                sx={subMode === m ? { bgcolor: amber, color: '#0f1923' } : { borderColor: amber, color: amber }}>
+                {m === 'link' ? '🔗 Paste Link' : m === 'file' ? '📁 Upload File' : '✍️ Text Answer'}
+              </Button>
+            ))}
+          </Box>
+
+          {subMode === 'text' && (
+            <TextField fullWidth label="Your Answer *" value={subForm.textContent}
+              onChange={e => setSubForm({ ...subForm, textContent: e.target.value })}
+              multiline rows={6} placeholder="Type your answer here..." />
+          )}
+          {subMode === 'link' && (
+            <TextField fullWidth label="Google Drive / File URL *"
+              placeholder="https://drive.google.com/..."
+              value={subForm.fileUrl} onChange={e => setSubForm({ ...subForm, fileUrl: e.target.value })} />
+          )}
+          {subMode === 'file' && (
+            <Box>
+              <input type="file" id="sub-file"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.zip,.jpg,.png"
+                style={{ display: 'none' }} onChange={e => setSubFile(e.target.files[0])} />
+              <label htmlFor="sub-file">
+                <Button variant="outlined" component="span" startIcon={<AttachFile />} fullWidth
+                  sx={{ py: 1.5, borderColor: amber, color: amber, borderStyle: 'dashed' }}>
+                  {subFile ? `✅ ${subFile.name}` : 'Choose File (PDF / DOC / PPT / ZIP / Image)'}
+                </Button>
+              </label>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => { setSubmitDialog(null); setSubFile(null); }}>Cancel</Button>
+          <Button variant="contained" onClick={submitAssignment} disabled={submitting}
+            sx={{ bgcolor: amber, color: '#0f1923', '&:hover': { bgcolor: '#d97706' } }}>
+            {submitting ? <CircularProgress size={20} sx={{ color: '#0f1923' }} /> : submitDialog?.submissions?.[0] ? 'Update Submission' : 'Submit Assignment'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Layout>
+  );
+}
