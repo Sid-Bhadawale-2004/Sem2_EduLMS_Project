@@ -88,10 +88,68 @@ router.get('/', authenticate, authorize('FACULTY', 'ADMIN'), async (req, res) =>
 
 // ── POST /api/sessions/:id/end ────────────────────────────────────────────────
 router.post('/:id/end', authenticate, authorize('FACULTY', 'ADMIN'), async (req, res) => {
-  await Session.findByIdAndUpdate(req.params.id, { isActive: false, endTime: new Date() });
-  await QrCode.deleteMany({ sessionId: req.params.id });
-  await CodeSession.updateMany({ sessionId: req.params.id }, { isActive: false });
-  res.json({ message: 'Session ended' });
+  try {
+    const session = await Session.findByIdAndUpdate(
+      req.params.id,
+      { isActive: false, endTime: new Date() },
+      { new: true }
+    ).lean();
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Deactivate QR codes and 6-digit codes
+    await QrCode.deleteMany({ sessionId: req.params.id });
+    await CodeSession.updateMany({ sessionId: req.params.id }, { isActive: false });
+
+    // Mark absent: Get all students in this class
+    const students = await Student.find({ classId: session.classId }).lean();
+
+    // Get all attendance records for this session
+    const attendances = await Attendance.find({ sessionId: session._id }).select('studentId').lean();
+    const attendedStudentIds = new Set(attendances.map(a => String(a.studentId)));
+
+    // Find students who didn't mark attendance
+    const absentStudents = students.filter(student => !attendedStudentIds.has(String(student._id)));
+
+    // Create ABSENT records for students who didn't mark attendance
+    if (absentStudents.length > 0) {
+      const absentRecords = absentStudents.map(student => ({
+        studentId: student._id,
+        sessionId: session._id,
+        status: 'ABSENT',
+        markedBy: 'SYSTEM',
+        markedAt: new Date(),
+      }));
+
+      await Attendance.insertMany(absentRecords);
+
+      // Broadcast absent records to session
+      for (const record of absentRecords) {
+        const studentData = students.find(s => String(s._id) === String(record.studentId));
+        if (studentData) {
+          emitToSession(String(session._id), 'attendance:marked', {
+            attendanceId: record._id,
+            studentId: record.studentId,
+            rollNumber: studentData.rollNumber,
+            name: studentData.name,
+            markedAt: record.markedAt,
+            status: record.status,
+            markedBy: record.markedBy,
+          });
+        }
+      }
+    }
+
+    res.json({
+      message: 'Session ended',
+      absentMarkedCount: absentStudents.length,
+    });
+  } catch (error) {
+    console.error('Error ending session:', error);
+    res.status(500).json({ error: 'Failed to end session', details: error.message });
+  }
 });
 
 // ── POST /api/sessions/:id/qr — generate/refresh QR (10 min expiry) ──────────

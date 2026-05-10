@@ -115,7 +115,7 @@ const attendanceSchema = new Schema({
   sessionId: { type: Schema.Types.ObjectId, ref: 'Session', required: true },
   status:    { type: String, enum: ['PRESENT', 'ABSENT', 'LATE'], default: 'PRESENT' },
   markedAt:  { type: Date, default: Date.now },
-  markedBy:  { type: String, enum: ['SELF', 'FACULTY'], default: 'SELF' },
+  markedBy:  { type: String, enum: ['SELF', 'FACULTY', 'SYSTEM'], default: 'SELF' },
   ipAddress: { type: String, default: '' },
 }, { timestamps: true });
 attendanceSchema.index({ studentId: 1, sessionId: 1 }, { unique: true });
