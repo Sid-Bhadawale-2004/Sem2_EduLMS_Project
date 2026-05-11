@@ -10,9 +10,11 @@ import {
   School, Assignment, CalendarMonth, Campaign,
   VideoCall, MenuBook, Notifications as NotifIcon,
   Chat as ChatIcon, BarChart as BarChartIcon, AccountCircle,
+  AccessTime, LocationOn,
 } from '@mui/icons-material';
 import Layout from '../components/Layout';
 import api from '../services/api';
+import socketService from '../services/socketService';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -41,6 +43,9 @@ export default function StudentDashboard({ isDark, onToggleDark }) {
   const [loading, setLoading] = useState(true);
   const [qrActive, setQrActive] = useState(false);
   const [qrError, setQrError] = useState('');
+  const [codeExpiry, setCodeExpiry] = useState(null);
+  const [codeTimeLeft, setCodeTimeLeft] = useState(null);
+  const [sessionInfo, setSessionInfo] = useState(null);
   const videoRef  = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -52,7 +57,20 @@ export default function StudentDashboard({ isDark, onToggleDark }) {
   const [fullscreen, setFullscreen] = useState(false);
   const [qrDetected, setQrDetected] = useState(false);
 
-  useEffect(() => { loadAttendance(); return () => { stopQR(); }; }, []);
+  useEffect(() => { 
+    loadAttendance(); 
+    
+    // Listen for code refresh updates
+    const unsubscribeCode = socketService.onCodeRefreshed((payload) => {
+      setCodeExpiry(new Date(payload.expiresAt));
+      setCodeTimeLeft(null);
+    });
+
+    return () => { 
+      stopQR(); 
+      unsubscribeCode?.();
+    }; 
+  }, []);
 
   const loadAttendance = async () => {
     setLoading(true);
@@ -62,6 +80,25 @@ export default function StudentDashboard({ isDark, onToggleDark }) {
     } catch { toast.error('Failed to load attendance'); }
     finally { setLoading(false); }
   };
+
+  // Update code time left countdown
+  useEffect(() => {
+    if (!codeExpiry) return;
+    const interval = setInterval(() => {
+      const now = new Date();
+      const diff = new Date(codeExpiry) - now;
+      if (diff <= 0) {
+        setCodeExpiry(null);
+        setCodeTimeLeft(null);
+        clearInterval(interval);
+      } else {
+        const mins = Math.floor(diff / 60000);
+        const secs = Math.floor((diff % 60000) / 1000);
+        setCodeTimeLeft(`${mins}:${secs.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [codeExpiry]);
 
   const startQR = async () => {
     setQrError(''); setZoom(1); setTorchOn(false);
@@ -147,10 +184,24 @@ export default function StudentDashboard({ isDark, onToggleDark }) {
     if (code.length !== 6) return toast.error('Enter the 6-digit code');
     setSubmitting(true);
     try {
-      await api.post('/attendance/code', { code });
-      toast.success('✅ Attendance marked!'); setCode('');
+      let lat = null, lng = null;
+      try {
+        const pos = await new Promise((res, rej) => 
+          navigator.geolocation.getCurrentPosition(res, rej, { timeout: 4000, enableHighAccuracy: true })
+        );
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+      } catch (e) {
+        console.warn('Geolocation failed:', e.message);
+        // Continue without location if geolocation fails (in case location is not required)
+      }
+      await api.post('/attendance/code', { code, lat, lng });
+      toast.success('✅ Attendance marked!');
+      setCode('');
       await loadAttendance();
-    } catch (err) { toast.error(err.response?.data?.error || 'Failed'); }
+    } catch (err) { 
+      toast.error(err.response?.data?.error || 'Failed'); 
+    }
     finally { setSubmitting(false); }
   };
 
@@ -220,12 +271,22 @@ export default function StudentDashboard({ isDark, onToggleDark }) {
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                       Enter the 6-digit code shown by your faculty.
                     </Typography>
+                    {codeExpiry && (
+                      <Alert severity="info" icon={<AccessTime />} sx={{ mb: 2, borderRadius: 1.5 }}>
+                        <Typography variant="caption" fontWeight={600}>
+                          Code expires in: <span style={{ fontWeight: 800, fontSize: '1.1em' }}>{codeTimeLeft || 'checking...'}</span>
+                        </Typography>
+                      </Alert>
+                    )}
                     <TextField fullWidth label="6-Digit Code" value={code}
                       onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                       margin="normal" size="small"
                       inputProps={{ inputMode: 'numeric', maxLength: 6, style: { letterSpacing: 10, fontSize: 24, textAlign: 'center', fontWeight: 800 } }}
                       sx={{ '& .MuiOutlinedInput-root.Mui-focused fieldset': { borderColor: amber } }}
                     />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      ℹ️ Location verification may be required if enabled by your faculty.
+                    </Typography>
                     <Button fullWidth variant="contained" sx={{ mt: 1.5, py: 1.2, bgcolor: amber, color: '#0f1923', fontWeight: 700, '&:hover': { bgcolor: '#d97706' } }}
                       onClick={submitCode} disabled={submitting || code.length !== 6}>
                       {submitting ? <CircularProgress size={20} sx={{ color: '#0f1923' }} /> : 'Mark Attendance'}

@@ -73,7 +73,7 @@ router.post('/qr', authenticate, authorize('STUDENT'), async (req, res) => {
 
 // POST /api/attendance/code
 router.post('/code', authenticate, authorize('STUDENT'), async (req, res) => {
-  const { code } = req.body;
+  const { code, lat, lng } = req.body;
   if (!code) return res.status(400).json({ error: 'Code required' });
 
   const codeDoc = await CodeSession.findOne({
@@ -89,6 +89,15 @@ router.post('/code', authenticate, authorize('STUDENT'), async (req, res) => {
 
   if (!sameId(student.classId, session.classId)) {
     return res.status(403).json({ error: 'You are not enrolled in this class.' });
+  }
+
+  // Location check (same as QR endpoint)
+  if (session.locationEnabled && session.locationLat && session.locationLng) {
+    if (!lat || !lng) return res.status(403).json({ error: 'Location required. Please allow location access.' });
+    const dist = getDistanceM(session.locationLat, session.locationLng, lat, lng);
+    if (dist > session.locationRadius) {
+      return res.status(403).json({ error: `You are ${Math.round(dist)}m away. Must be within ${session.locationRadius}m.` });
+    }
   }
 
   const existing = await Attendance.findOne({ studentId: student._id, sessionId: session._id });
