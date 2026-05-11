@@ -66,13 +66,6 @@ api.interceptors.response.use(
         return Promise.reject(e);
       } finally { isRefreshing = false; }
     }
-    if (error.response?.status === 403) {
-      const url = error.config?.url || '';
-      if (['/attendance/my', '/attendance/code', '/attendance/qr'].some(r => url.includes(r))) {
-        ['accessToken','refreshToken','user'].forEach(k => localStorage.removeItem(k));
-        window.location.href = '/login';
-      }
-    }
     return Promise.reject(error);
   }
 );

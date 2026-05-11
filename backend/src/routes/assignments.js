@@ -38,6 +38,35 @@ router.get('/', authenticate, async (req, res) => {
   })));
 });
 
+// GET /api/assignments/download/:filename — download assignment file (MUST be before /:id route)
+router.get('/download/:filename', authenticate, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    // Prevent directory traversal
+    if (filename.includes('..') || filename.includes('/')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(UPLOAD_ROOT, 'assignments', filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Send file
+    res.download(filePath, filename, (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: 'Failed to download file' });
+      }
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Download failed' });
+    }
+  }
+});
+
 // POST /api/assignments — faculty
 router.post('/', authenticate, authorize('FACULTY', 'ADMIN'), optionalUpload('assignments'), async (req, res) => {
   const { title, description, subjectId, dueDate, maxMarks } = req.body;
@@ -88,6 +117,28 @@ router.post('/', authenticate, authorize('FACULTY', 'ADMIN'), optionalUpload('as
   } catch {}
 
   res.status(201).json({ ...assignment.toObject(), id: assignment._id });
+});
+
+// GET /api/assignments/:id
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const assignment = await Assignment.findById(req.params.id)
+      .populate('subjectId', 'name code')
+      .populate('facultyId', 'name');
+
+    if (!assignment) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    res.json({
+      ...assignment.toObject(),
+      id: assignment._id,
+      subject: assignment.subjectId,
+      faculty: assignment.facultyId,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch assignment' });
+  }
 });
 
 // DELETE /api/assignments/:id — faculty can delete their own, admin deletes any

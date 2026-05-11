@@ -11,6 +11,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { getDisplayName } from '../utils/displayName';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 
@@ -69,9 +70,8 @@ export default function Layout({ children, title, navItems = [], onToggleDark, i
   const role     = user?.role || 'STUDENT';
   const roleC    = ROLE_COLORS[role] || ROLE_COLORS.STUDENT;
   
-  // Extract name and calculate initials
-  // Format: Surname StudentName FathersName
-  const fullName = user?.student?.name || user?.faculty?.name || user?.email?.split('@')[0] || 'User';
+  // Get proper display name
+  const fullName = getDisplayName(user);
   const nameParts = fullName.trim().split(/\s+/);
   
   // Initials: StudentName[0] + Surname[0]

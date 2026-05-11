@@ -31,6 +31,35 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/notes/download/:filename — download note file (MUST be before /:id route)
+router.get('/download/:filename', authenticate, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    // Prevent directory traversal
+    if (filename.includes('..') || filename.includes('/')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(UPLOAD_ROOT, 'notes', filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Send file
+    res.download(filePath, filename, (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: 'Failed to download file' });
+      }
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Download failed' });
+    }
+  }
+});
+
 // GET /api/notes/:id — download/view a specific note
 router.get('/:id', authenticate, async (req, res) => {
   try {
